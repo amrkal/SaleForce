@@ -1,0 +1,215 @@
+# Unique name for this workflow
+name: CI
+
+# Definition when the workflow should run
+on:
+    workflow_dispatch:
+    push:
+        branches:
+            - main
+        paths-ignore:
+            - 'sfdx-project.json'
+            - 'README.md'
+
+# Jobs to be executed
+jobs:
+    format-lint-lwc-tests:
+        runs-on: trailheadapps-Ubuntu
+        steps:
+            # Checkout the source code
+            - name: 'Checkout source code'
+              uses: actions/checkout@v4
+
+            # Install Volta to enforce proper node and package manager versions
+            - name: 'Install Volta'
+              uses: volta-cli/action@v4
+
+            # Cache node_modules to speed up the process
+            - name: 'Restore node_modules cache'
+              id: cache-npm
+              uses: actions/cache@v4
+              with:
+                  path: node_modules
+                  key: npm-${{ hashFiles('**/package-lock.json') }}
+                  restore-keys: |
+                      npm-${{ env.cache-name }}-
+                      npm-
+
+            # Install npm dependencies for Prettier and Jest
+            - name: 'Install npm dependencies'
+              if: steps.cache-npm.outputs.cache-hit != 'true'
+              run: HUSKY=0 npm ci
+
+            # Prettier formatting
+            # For 10x performance gain, replace this with prettier:verify:apex:local
+            # (not allowed in our custom self-hosted GitHub Actions runner)
+            - name: 'Code formatting verification with Prettier'
+              run: npm run prettier:verify
+
+            # Lint LWC / Aura
+            - name: 'Lint Lightning Web Components / Aura Components'
+              run: npm run lint
+
+            # LWC unit tests
+            - name: 'Unit test Lightning Web Components'
+              run: npm run test:unit:coverage
+
+            # Upload code coverage data
+            - name: 'Upload code coverage for LWC to Codecov.io'
+              uses: codecov/codecov-action@v4
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  flags: LWC
+
+    scratch-org-test:
+        runs-on: trailheadapps-Ubuntu
+        needs: format-lint-lwc-tests
+        if: github.actor != 'dependabot[bot]'
+        steps:
+            # Checkout the source code
+            - name: 'Checkout source code'
+              uses: actions/checkout@v4
+
+            # Run PMD scan
+            - name: 'Run PMD scan'
+              uses: pmd/pmd-github-action@v2.0.0
+              id: pmd
+              with:
+                  version: '6.55.0'
+                  rulesets: 'ruleset.xml'
+
+            # Check for PMD violations
+            - name: 'Check for PMD violations'
+              if: steps.pmd.outputs.violations != 0
+              run: exit 1
+
+            # Install Salesforce CLI
+            - name: 'Install Salesforce CLI'
+              run: |
+                  npm install @salesforce/cli --location=global
+                  nodeInstallPath=$(npm config get prefix)
+                  echo "$nodeInstallPath/bin" >> $GITHUB_PATH
+                  sf --version
+
+            # Store secret for dev hub
+            - name: 'Populate auth file with DEVHUB_SFDX_URL secret'
+              shell: bash
+              run: |
+                  echo ${{ secrets.DEVHUB_SFDX_URL }} > ./DEVHUB_SFDX_URL.txt
+                  secretFileSize=$(wc -c "./DEVHUB_SFDX_URL.txt" | awk '{print $1}')
+                  if [ $secretFileSize == 1 ]; then
+                      echo "Missing DEVHUB_SFDX_URL secret. Is this workflow running on a fork?";
+                      exit 1;
+                  fi
+
+            # Authenticate dev hub
+            - name: 'Authenticate Dev Hub'
+              run: sf org login sfdx-url -f ./DEVHUB_SFDX_URL.txt -a devhub -d
+
+            # Add namespace to project config
+            - name: 'Add namespace to project config'
+              run: |
+                  sed -i 's,"namespace": "","namespace": "autocomp",' sfdx-project.json
+
+            # Add namespace to CPEs
+            - name: 'Add namespace to Custom Property Editors'
+              run: |
+                  find . -type f -name "*.js-meta.xml" -print0 | xargs -0 sed -i 's,configurationEditor="c-,configurationEditor="autocomp-,'
+
+            # Create scratch org
+            - name: 'Create scratch org'
+              run: sf org create scratch -f config/project-scratch-def.json -a scratch-org -d -y 1 -c
+
+            # Deploy source to scratch org
+            - name: 'Push source to scratch org'
+              run: sf project deploy start
+
+            # Run Apex tests in scratch org
+            - name: 'Run Apex tests'
+              run: sf apex test run -c -r human -d ./tests/apex -w 20
+
+            # Upload code coverage data
+            - name: 'Upload code coverage for Apex to Codecov.io'
+              uses: codecov/codecov-action@v4
+              with:
+                  token: ${{ secrets.CODECOV_TOKEN }}
+                  flags: Apex
+
+            # Housekeeping
+            - name: 'Delete scratch org'
+              if: always()
+              run: sf org delete scratch -p -o scratch-org
+
+    trigger-packaging:
+        runs-on: trailheadapps-Ubuntu
+        needs: scratch-org-test
+        steps:
+            # Checkout the source code with history
+            - name: 'Checkout source code'
+              uses: actions/checkout@v4
+
+            # Check for package changes using git diff
+            - name: 'Check for package changes'
+              id: checkForChanges
+              run: |
+                  git fetch origin ${{ github.event.before }} --depth=1
+                  changedPaths=$( git diff-tree --name-only ${{ github.event.before }} $GITHUB_SHA )
+
+                  set +e
+                  changedPackages=()
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-apex-formula-evaluator$') == 1 ]; then
+                      changedPackages+=( 'AC - Apex Formula Evaluator' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-collections$') == 1 ]; then
+                      changedPackages+=( 'AC - Collections' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-data$') == 1 ]; then
+                      changedPackages+=( 'AC - Data' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-flows$') == 1 ]; then
+                      changedPackages+=( 'AC - Flows' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-messaging$') == 1 ]; then
+                      changedPackages+=( 'AC - Messaging' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-security$') == 1 ]; then
+                      changedPackages+=( 'AC - Security' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-strings$') == 1 ]; then
+                      changedPackages+=( 'AC - Strings' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-ui$') == 1 ]; then
+                      changedPackages+=( 'AC - UI' )
+                  fi
+
+                  if [ $(echo "$changedPaths" | grep -c '^src-utilities$') == 1 ]; then
+                      changedPackages+=( 'AC - Utilities' )
+                  fi
+
+                  echo "Changed packages (${#changedPackages[@]}):"
+                  for i in ${changedPackages[@]}; do
+                      echo "- $i"
+                  done
+
+                  changedPackagesJson='[]'
+                  if (( ${#changedPackages[@]} > 0 )); then
+                      changedPackagesJson=$(printf '%s\n' "${changedPackages[@]}" | jq -R . | jq -c -s .)
+                  fi
+                  echo "changes=$changedPackagesJson" >> $GITHUB_OUTPUT
+
+            # Trigger packaging workflow if needed
+            - name: 'Trigger packaging workflow if needed'
+              uses: peter-evans/repository-dispatch@v3
+              if: steps.checkForChanges.outputs.changes != '[]'
+              with:
+                  token: ${{ secrets.REPO_ACCESS_TOKEN }}
+                  event-type: start-packaging
+                  client-payload: '{ "ref": "${{ github.ref }}", "sha": "${{ github.sha }}", "packageNames": ${{ steps.checkForChanges.outputs.changes }} }'

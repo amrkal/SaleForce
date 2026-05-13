@@ -1,0 +1,56 @@
+{
+    "name": "@salesforce/automation-components",
+    "private": true,
+    "version": "1.0.0",
+    "description": "Automation Components for the Salesforce Platform",
+    "scripts": {
+        "lint": "eslint **/{lwc,aura}/**/*.js",
+        "test": "npm run test:unit",
+        "test:unit": "sfdx-lwc-jest",
+        "test:unit:watch": "sfdx-lwc-jest --watch ",
+        "test:unit:debug": "sfdx-lwc-jest --debug ",
+        "test:unit:coverage": "sfdx-lwc-jest --coverage ",
+        "prettier": "prettier --write \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+        "prettier:verify": "prettier --check \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\"",
+        "prettier:apex:local": "start-apex-server & npx wait-on -t 3000 http://localhost:2117/api/ast/ && prettier --apex-standalone-parser built-in --write \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\" && stop-apex-server",
+        "prettier:verify:apex:local": "start-apex-server & npx wait-on -t 3000 http://localhost:2117/api/ast/ && prettier --apex-standalone-parser built-in --list-different \"**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}\" && stop-apex-server",
+        "prepare": "husky || true",
+        "precommit": "lint-staged"
+    },
+    "lint-staged": {
+        "**/*.{cls,cmp,component,css,html,js,json,md,page,trigger,xml,yaml,yml}": [
+            "prettier --write"
+        ],
+        "**/{aura,lwc}/**/*.js": [
+            "eslint"
+        ],
+        "**/lwc/**": [
+            "sfdx-lwc-jest -- --bail --findRelatedTests --passWithNoTests"
+        ]
+    },
+    "author": "salesforce.com",
+    "license": "CC0-1.0",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/trailheadapps/automation-components"
+    },
+    "devDependencies": {
+        "@lwc/eslint-plugin-lwc": "^1.9.0",
+        "@prettier/plugin-xml": "^3.4.1",
+        "@sa11y/jest": "^6.13.0",
+        "@salesforce/eslint-config-lwc": "^3.6.0",
+        "@salesforce/eslint-plugin-aura": "^2.1.0",
+        "@salesforce/eslint-plugin-lightning": "^1.0.1",
+        "@salesforce/sfdx-lwc-jest": "^5.1.0",
+        "eslint": "^8.57.0",
+        "eslint-plugin-import": "^2.31.0",
+        "eslint-plugin-jest": "^28.12.0",
+        "husky": "^9.1.7",
+        "lint-staged": "^15.5.1",
+        "prettier": "^3.3.3",
+        "prettier-plugin-apex": "^2.2.6"
+    },
+    "volta": {
+        "node": "20.15.0"
+    }
+}
